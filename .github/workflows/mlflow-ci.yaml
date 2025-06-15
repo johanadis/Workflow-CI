@@ -1,0 +1,190 @@
+name: MLflow CI Workflow
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.12.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12.11"
+
+      - name: Check Env
+        run: |
+          python --version
+          pip --version
+
+      - name: Install dependencies
+        run: |
+          pip install pandas==2.2.3 numpy==2.0.1 scikit-learn==1.5.2 lightgbm==4.6.0 mlflow==2.19.0 matplotlib==3.10.3 seaborn==0.13.2 python-dotenv==1.0.1
+
+      - name: Set MLflow Tracking URI
+        run: |
+          echo "MLFLOW_TRACKING_URI=https://dagshub.com/johanadis/Eksperimen_SML_JohanadiSantoso.mlflow" >> $GITHUB_ENV
+          echo "MLFLOW_TRACKING_USERNAME=johanadis" >> $GITHUB_ENV
+          echo "MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Run MLflow project
+        env:
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          cd MLProject
+          mlflow run . --env-manager=local -P data_path=personality_dataset_preprocessing.csv > mlflow_output.log
+          ls -la Membangun_model/ || echo "Membangun_model directory not found"
+          # Ambil semua run ID dari log
+          run_ids=($(grep 'MLFLOW_RUN_ID=' mlflow_output.log | cut -d'=' -f2))
+          # Assign run ID berdasarkan urutan di modelling.py
+          lgbm_run_id=${run_ids[0]}
+          rf_run_id=${run_ids[1]}
+          if [ -z "$lgbm_run_id" ] || [ -z "$rf_run_id" ]; then
+            echo "Run ID untuk LightGBM atau RandomForest tidak ditemukan"
+            cat mlflow_output.log
+            exit 1
+          fi
+          echo "lgbm_run_id=$lgbm_run_id" >> $GITHUB_ENV
+          echo "rf_run_id=$rf_run_id" >> $GITHUB_ENV
+          echo "LightGBM run ID: $lgbm_run_id"
+          echo "Random Forest run ID: $rf_run_id"
+
+      - name: Download artifacts from DagsHub
+        env:
+          DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+        run: |
+          export MLFLOW_TRACKING_URI=https://dagshub.com/johanadis/Eksperimen_SML_JohanadiSantoso.mlflow
+          export MLFLOW_TRACKING_USERNAME=johanadis
+          export MLFLOW_TRACKING_PASSWORD=${{ secrets.DAGSHUB_TOKEN }}
+          mkdir -p mlruns/0
+          # Buat script Python untuk download run data
+          cat << 'EOF' > download_run.py
+          import mlflow
+          from mlflow.tracking import MlflowClient
+          import os
+          import shutil
+          import traceback
+
+          def download_run(run_id, dst_path):
+              client = MlflowClient()
+              os.makedirs(dst_path, exist_ok=True)
+              try:
+                  # Download artifacts
+                  artifact_path = client.download_artifacts(run_id, ".", dst_path)
+                  print(f"Downloaded artifacts for run_id {run_id} to {artifact_path}")
+              except Exception as e:
+                  print(f"Failed to download artifacts for run_id {run_id}: {str(e)}")
+                  traceback.print_exc()
+                  # Buat folder artifacts kosong
+                  os.makedirs(os.path.join(dst_path, "artifacts"), exist_ok=True)
+
+              # Cek artifacts di DagsHub
+              try:
+                  artifacts = client.list_artifacts(run_id)
+                  print(f"Artifacts in DagsHub for run_id {run_id}: {[a.path for a in artifacts]}")
+              except Exception as e:
+                  print(f"Failed to list artifacts for run_id {run_id}: {str(e)}")
+                  traceback.print_exc()
+
+              # Buat meta.yaml
+              try:
+                  run = client.get_run(run_id)
+                  meta_yaml_path = os.path.join(dst_path, "meta.yaml")
+                  with open(meta_yaml_path, "w") as f:
+                      f.write(f"""
+          artifact_uri: {run.info.artifact_uri}
+          end_time: {run.info.end_time}
+          experiment_id: {run.info.experiment_id}
+          lifecycle_stage: {run.info.lifecycle_stage}
+          run_id: {run.info.run_id}
+          run_uuid: {run.info.run_uuid}
+          start_time: {run.info.start_time}
+          status: {run.info.status}
+          user_id: {run.info.user_id}
+          """)
+                  print(f"Created meta.yaml for run_id {run_id} at {meta_yaml_path}")
+              except Exception as e:
+                  print(f"Failed to create meta.yaml for run_id {run_id}: {str(e)}")
+                  traceback.print_exc()
+                  exit(1)
+
+          if __name__ == "__main__":
+              run_ids = ["${{ env.lgbm_run_id }}", "${{ env.rf_run_id }}"]
+              for run_id in run_ids:
+                  dst_path = f"mlruns/0/{run_id}"
+                  download_run(run_id, dst_path)
+                  # Cek file kunci
+                  meta_yaml = f"{dst_path}/meta.yaml"
+                  artifacts_dir = f"{dst_path}/artifacts"
+                  if os.path.exists(meta_yaml):
+                      print(f"Run directory prepared for run_id: {run_id}")
+                      os.system(f"ls -la {dst_path}/")
+                      os.system(f"ls -la {artifacts_dir}/")
+                      os.system(f"find {artifacts_dir} -type f")
+                  else:
+                      print(f"Incomplete run directory for run_id: {run_id}")
+                      os.system(f"ls -la {dst_path}/ || true")
+                      exit(1)
+          EOF
+          python download_run.py
+          ls -la mlruns/ || echo "mlruns directory structure after download"
+
+      - name: Upload artifacts to GitHub LFS
+        run: |
+          git lfs install
+          git lfs track "mlruns/**/*"
+          ls -la .
+          if [ -d "mlruns" ]; then
+            ls -la mlruns/
+            git config user.name "johanadis"
+            git config user.email "johanadisantoso.dev@gmail.com"
+            git add mlruns/
+            git add .gitattributes
+            git commit -m "Add MLflow artifacts to LFS" || echo "No changes to commit"
+            git push origin main
+          else
+            echo "No mlruns directory found, skipping LFS upload"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t workflow-ci:latest --build-arg RUN_ID=${{ env.lgbm_run_id }} --build-arg MODEL_NAME=LightGBM -f MLProject/Dockerfile .
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag Docker image
+        run: |
+          docker tag workflow-ci:latest ${{ secrets.DOCKERHUB_USERNAME }}/workflow-ci:latest
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/workflow-ci:latest
+
+      - name: Post Log in to Docker Hub
+        if: always()
+        run: |
+          docker logout
+
+      - name: Complete job
+        if: always()
+        run: |
+          echo "CI job completed"
+        if: always()
+        run: |
+          echo "CI job completed"
