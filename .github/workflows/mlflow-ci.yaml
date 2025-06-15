@@ -41,18 +41,20 @@ jobs:
           DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
         run: |
           cd MLProject
-          mlflow run . --env-manager=local -P data_path=personality_dataset_preprocessing.csv > mlflow_output.log
+          echo "==== ENVIRONMENT ===="
+          env | grep MLFLOW || true
+          echo "====================="
+          mlflow run . --env-manager=local --experiment-name "Personality_Prediction" -P data_path=personality_dataset_preprocessing.csv > mlflow_output.log
           ls -la Membangun_model/ || echo "Membangun_model directory not found"
           # Ambil semua run ID dari log
           run_ids=($(grep 'MLFLOW_RUN_ID=' mlflow_output.log | cut -d'=' -f2))
-          # Assign run ID berdasarkan urutan di modelling.py
-          lgbm_run_id=${run_ids[0]}
-          rf_run_id=${run_ids[1]}
-          if [ -z "$lgbm_run_id" ] || [ -z "$rf_run_id" ]; then
-            echo "Run ID untuk LightGBM atau RandomForest tidak ditemukan"
+          if [ ${#run_ids[@]} -lt 2 ]; then
+            echo "Error: Run ID tidak lengkap. Ditemukan ${#run_ids[@]}."
             cat mlflow_output.log
             exit 1
           fi
+          lgbm_run_id=${run_ids[0]}
+          rf_run_id=${run_ids[1]}
           echo "lgbm_run_id=$lgbm_run_id" >> $GITHUB_ENV
           echo "rf_run_id=$rf_run_id" >> $GITHUB_ENV
           echo "LightGBM run ID: $lgbm_run_id"
