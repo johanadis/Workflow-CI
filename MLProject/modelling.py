@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 from mlflow.tracking import MlflowClient
+
 os.environ["LOKY_MAX_CPU_COUNT"] = "4"
 
 def train_and_log_model(model, model_name, X_train, X_test, y_train, y_test):
