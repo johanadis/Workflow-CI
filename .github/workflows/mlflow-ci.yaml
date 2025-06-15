@@ -185,6 +185,3 @@ jobs:
         if: always()
         run: |
           echo "CI job completed"
-        if: always()
-        run: |
-          echo "CI job completed"
